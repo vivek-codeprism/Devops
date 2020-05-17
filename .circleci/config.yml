@@ -1,0 +1,144 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/node:10
+      - image: brandembassy/rabbitmq:latest
+        environment:
+          RABBITMQ_ERLANG_COOKIE: "SWQOKODSQALRPCLNMEQG"
+          RABBITMQ_DEFAULT_USER: "guest"
+          RABBITMQ_DEFAULT_PASS: "guest"
+          RABBITMQ_DEFAULT_VHOST: "/"
+        ports:
+          - "15672:15672"
+          - "5672:5672"
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: |
+            npm install
+      - run:
+          name: Setup postgresql user and db
+          environment:
+            PG_HOST: "127.0.0.1"
+            PG_USER: "root"
+          command: |
+            sudo apt-get install lsb-release
+            wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+            sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -sc)-pgdg main" > /etc/apt/sources.list.d/PostgreSQL.list'
+            sudo apt update
+            sudo apt-get install postgresql-10 postgresql-client pcregrep
+            sudo service postgresql start
+            sudo su - postgres -c $'psql -p 5432 -c "create user root with password \'mysecretpassword\';"'
+            sudo su - postgres -c 'psql -p 5432 -c "alter user root with superuser;"'
+            sudo su - postgres -c 'psql -p 5432 -c "create database tampa_test;"'
+            sudo su - postgres -c 'psql -p 5432 -c "grant all privileges on database tampa_test to root;"'
+      - run:
+          name: Detect possible problems with TypeORM queries (multiple where's)
+          command: |
+            if [[ $(cd src && pcregrep -M -e '(.){0,}(.where)(.){0,}$(\s){0,}(.where)(.){0,}$' -r . ) ]]; then
+                echo "possible .where problems have been detected!"
+                exit 1
+            else
+                echo "no possible .where problems have been detected"
+            fi
+      - run:
+          name: Run server
+          environment:
+            DATABASE_URL: "postgres://root:mysecretpassword@localhost:5432/tampa_test"
+            DATABASE_TEST_URL: "postgres://root:mysecretpassword@localhost:5432/tampa_test"
+            SOCKETCLUSTER_PORT: "8000"
+            PORT: "3000"
+            NODE_ENV: "dev"
+            JWT_SECRET: "123"
+            DEVEXT: "ts"
+            TYPEORM_AUTO_SCHEMA_SYNC: true
+          command: npm run server_test
+          background: true
+
+      # wait for the server to start responding.
+      # so override the shell and have the last command be the : { null } command to force exit code 0.
+      - run:
+          name: Wait for the server
+          shell: /bin/sh
+          command: |
+            wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 40 http://127.0.0.1:3000
+            :
+      - run:
+          name: Run tests
+          environment:
+            DATABASE_URL: "postgres://root:mysecretpassword@localhost:5432/tampa_test"
+            DATABASE_TEST_URL: "postgres://root:mysecretpassword@localhost:5432/tampa_test"
+            SOCKETCLUSTER_PORT: "8000"
+            NODE_ENV: "dev"
+            JWT_SECRET: "123"
+            DEVEXT: "ts"
+          command: |
+            mkdir ~/tests
+            npm test
+      - store_test_results:
+          path: ~/tests
+  deploy:
+    docker:
+      - image: keymetrics/pm2@sha256:dbb5a4efdecbd88ab7d1d4a809d242e90c1eae23709c4b00ce256dabe49ad0d1
+    steps:
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - checkout
+      - run:
+          name: Install Docker client
+          command: |
+            set -x
+            VER="17.03.0-ce"
+            curl -L -o /tmp/docker-$VER.tgz https://download.docker.com/linux/static/stable/x86_64/docker-$VER.tgz
+            tar -xz -C /tmp -f /tmp/docker-$VER.tgz
+            mv /tmp/docker/* /usr/bin
+      - run:
+          name: Setup Env variables
+          command: |
+            if [ "${CIRCLE_BRANCH}" == "develop" ]; then
+              echo 'export TAG=${CIRCLE_BRANCH}.0.1.${CIRCLE_BUILD_NUM}' >> $BASH_ENV
+            elif [ "${CIRCLE_BRANCH}" == "release" ]; then
+              echo 'export TAG=${CIRCLE_BRANCH}.0.1.${CIRCLE_BUILD_NUM}' >> $BASH_ENV
+            elif [ "${CIRCLE_BRANCH}" == "stage" ]; then
+              echo 'export TAG=${CIRCLE_BRANCH}.0.1.${CIRCLE_BUILD_NUM}' >> $BASH_ENV
+            elif [ "${CIRCLE_BRANCH}" == "master" ]; then
+              echo 'export TAG=${CIRCLE_BRANCH}.0.1.${CIRCLE_BUILD_NUM}' >> $BASH_ENV
+            else
+              echo 'export TAG=0.1.${CIRCLE_BUILD_NUM}' >> $BASH_ENV
+            fi
+            echo 'export IMAGE_NAME=tampa_rest' >> $BASH_ENV
+      - run:
+          name: Show Env variables and build docker image
+          command: |
+            echo $CIRCLE_BRANCH
+            echo $TAG > build.tag
+            echo $IMAGE_NAME
+            docker build -t $IMAGE_NAME:$TAG .
+      - run:
+          name: Docker push image 
+          command: |
+            docker image ls            
+            docker login $REGISTRY_HOST:$REGISTRY_PORT  --username $REGISTRY_USER --password $REGISTRY_PASS 
+            docker tag $IMAGE_NAME:$TAG $REGISTRY_HOST:$REGISTRY_PORT/$REGISTRY_USER/$IMAGE_NAME:$TAG
+            docker push $REGISTRY_HOST:$REGISTRY_PORT/$REGISTRY_USER/$IMAGE_NAME:$TAG
+            docker tag $IMAGE_NAME:$TAG $REGISTRY_HOST:$REGISTRY_PORT/$REGISTRY_USER/$IMAGE_NAME:latest
+            docker push $REGISTRY_HOST:$REGISTRY_PORT/$REGISTRY_USER/$IMAGE_NAME:latest
+workflows:
+  version: 2
+  build_and_test:
+    jobs:
+      - build
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only:
+                - develop
+                - release
+                - stage
+                - master
+
+
