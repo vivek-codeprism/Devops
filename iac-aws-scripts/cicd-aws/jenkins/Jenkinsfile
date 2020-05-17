@@ -1,0 +1,47 @@
+pipeline {
+    agent any
+    parameters {
+        string(defaultValue: '1', description: 'scale factor', name: 'scale_factor')
+        string(defaultValue: 'https://github.com/demo_flask.git', description: 'app repo', name: 'app_repo')
+        string(defaultValue: 'us-west-2', description: 'region', name: 'region')
+    }
+    environment {
+        docker_id   = credentials('docker_id')
+        docker_pass = credentials('docker_pass')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                git branch: 'master', url: "${params.app_repo}"
+                sh "docker build -t app flask/."
+                sh "docker tag app ${env.docker_id}/app:$BUILD_NUMBER"
+                sh "docker login -u ${env.docker_id} -p ${env.docker_pass}"
+                sh "docker push ${env.docker_id}/app:$BUILD_NUMBER"
+            }
+        }
+        stage('Apply') {
+            environment {
+                TF_VAR_access_key    = credentials('access_key')
+                TF_VAR_secret_key    = credentials('secret_key')
+                TF_VAR_region        = "${params.region}"
+                TF_VAR_instance_type = 't2.small'
+                TF_VAR_docker_id     = "${env.docker_id}"
+                TF_VAR_version       = "$BUILD_NUMBER"
+                TF_VAR_scale_factor  = "${params.scale_factor}"
+                TF_VAR_white_listed  = '["0.0.0.0/0"]'
+                TF_VAR_app_repo      = "${params.app_repo}"
+                TF_VAR_mysql_host    = "${env.MYSQL_HOST}"
+            }
+            steps {
+                git branch: 'master',
+                    credentialsId: 'infra-repo-cred',
+                    url: 'https://github.com/demo.git'
+                sh 'terraform init'
+                sh 'terraform plan -target=aws_autoscaling_group.scaling -out=tfplan'
+                sh 'terraform apply tfplan'
+                //sh 'terraform destroy -auto-approve'
+                //sh 'terraform state list'
+            }
+        }
+    }
+}

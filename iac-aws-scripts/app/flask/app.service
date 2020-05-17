@@ -1,0 +1,12 @@
+[Unit]
+Description=instance of flask app
+After=network.target
+
+[Service]
+User=centos
+Group=centos
+WorkingDirectory=/opt/app
+ExecStart=/bin/python app.py
+
+[Install]
+WantedBy=multi-user.target

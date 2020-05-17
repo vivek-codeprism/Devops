@@ -1,0 +1,15 @@
+pipeline {
+    agent any
+    parameters {
+        string(defaultValue: '1', description: 'scale factor', name: 'scale_factor')
+        string(defaultValue: 'https://github.com/demo_flask.git', description: 'app repo', name: 'app_repo')
+        string(defaultValue: 'us-west-2', description: 'region', name: 'region')
+    }
+    stages {
+       stage('init') {
+            steps {
+                echo "init"
+            }
+        }
+    }
+}

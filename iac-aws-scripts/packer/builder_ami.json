@@ -1,0 +1,52 @@
+{
+  "builders": [{
+    "type": "amazon-ebs",
+    "region": "us-west-2",
+    "source_ami": "ami-02c71d7a",
+    "instance_type": "t2.micro",
+    "ssh_username": "centos",
+    "ami_name": "packer-{{timestamp}}"
+  }],
+  "provisioners": [{
+    "type": "file",
+    "source": "../app/bin/app",
+    "destination": "~/"
+  },
+  {
+    "type": "file",
+    "source": "../app/app.service",
+    "destination": "~/"
+  },
+  {
+    "type": "shell",
+    "inline":[
+      "sudo mkdir /opt/app",
+      "sudo chown centos:centos /opt/app",
+      "mv ~/app /opt/app/",
+      "sudo mv ~/app.service /etc/systemd/system/"
+    ]
+  },
+  {
+    "type": "shell",
+    "inline":[
+      "sudo systemctl enable app",
+      "sudo systemctl start app"
+    ]
+  }],
+  "post-processors": [
+    {
+      "type": "manifest",
+      "output": "manifest.json",
+      "strip_path": true
+    },
+    {
+      "type": "shell-local",
+      "inline": [
+         "UUID=$(jq -r '.last_run_uuid' manifest.json)",
+         "AMI=$(UUID=$UUID jq '.builds[] | select(.packer_run_uuid == env.UUID) | .artifact_id/\":\" | last' manifest.json)",
+         "AMI=$AMI echo ami_id = $AMI > ../packer.auto.tfvars",
+         "cp ../packer.auto.tfvars ../segregation/"
+      ]
+    }
+  ]
+}
